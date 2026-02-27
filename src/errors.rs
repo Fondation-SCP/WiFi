@@ -1,4 +1,3 @@
-use std::fmt::{Display, Formatter};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use thiserror::Error;

@@ -6,7 +6,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
-use sqlx::{Executor, MySql, Pool};
+use sqlx::{MySql, Pool};
 use std::error::Error;
 use std::iter;
 use std::sync::Arc;

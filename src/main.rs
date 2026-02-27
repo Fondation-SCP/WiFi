@@ -1,11 +1,9 @@
 use crate::db_structs::{Author, Category, Insertable, Message, Site, Thread};
 use sqlx::mysql::{MySqlArguments, MySqlPoolOptions};
-use sqlx::{MySql, MySqlPool, Pool};
+use sqlx::{MySql, Pool};
 use std::error::Error;
-use std::sync::Arc;
 
 mod forum_downloader;
-use forum_downloader::ForumDownloader;
 use crate::api::create_router;
 
 mod tools;
