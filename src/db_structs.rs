@@ -202,11 +202,11 @@ impl Insertable for Message {
         id int unique not null,
         title varchar(1024),
         content longtext,
-        author varchar(255),
+        author_username varchar(255),
         publication_date datetime,
         thread_id int not null,
         answers_to int,
-        foreign key(author)
+        foreign key(author_username)
             references authors(username),
         foreign key(thread_id)
             references threads(id),

@@ -4,11 +4,14 @@ pub mod threads;
 pub mod messages;
 pub mod sites;
 mod authors;
+mod db;
 
 use axum::{routing::get, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::{MySql, Pool};
 use std::fmt::{Display, Formatter};
+use axum::routing::{delete, post};
+use crate::errors::ApiError;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy)]
 pub enum Order {
@@ -28,14 +31,29 @@ impl Display for Order {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Default, Clone, Copy)]
+pub struct WriteToken {
+    token: u64
+}
 
+impl WriteToken {
+    const AUTHORIZED_TOKENS: [u64; 1] = [1644];
 
+    pub fn auth(&self) -> Result<(), ApiError> {
+        if Self::AUTHORIZED_TOKENS.contains(&self.token) {
+            Ok(())
+        } else {
+            Err(ApiError::AccessForbidden)
+        }
+    }
+}
 
 
 
 pub fn create_router(db: Pool<MySql>) -> Router {
     Router::new()
-        .route("/", get(async || "ok"))
+        .route("/", get(async || "Connected!"))
+        .route("/", delete(db::reset))
         .route("/threads", get(threads::list))
         .route("/count/threads", get(threads::count))
         .route("/threads/{id}", get(threads::get))
@@ -46,6 +64,7 @@ pub fn create_router(db: Pool<MySql>) -> Router {
         .route("/count/categories", get(categories::count))
         .route("/categories/{id}", get(categories::get))
         .route("/sites", get(sites::list))
+        .route("/sites", post(sites::post))
         .route("/count/sites", get(sites::count))
         .route("/authors", get(authors::list))
         .route("/count/authors", get(authors::count))

@@ -1,96 +1,112 @@
 use crate::db_structs::{Author, Category, Insertable, Message, Site, Thread};
-use crate::tools::{download_html, FutureIterator, TryFutureIterator};
+use crate::errors::ApiError;
+use crate::tools::{download, FutureIterator};
 use chrono::NaiveDateTime;
-use futures_util::{StreamExt, TryStreamExt};
 use itertools::Itertools;
-use lazy_static::lazy_static;
-use regex::Regex;
-use scraper::{ElementRef, Html, Selector};
+use scraper::{ElementRef, Html};
 use sqlx::{MySql, Pool};
-use std::error::Error;
-use std::iter;
+use std::{iter, mem};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use futures_util::{StreamExt, TryStreamExt};
+use tokio::sync::RwLock;
 
+/// The [forum_downloader] has a lot of static variables. To improve the clarity of the code structure,
+/// I've decided to put them all into a submodule.
+mod statics {
+    use lazy_static::lazy_static;
+    use regex::Regex;
+    use scraper::Selector;
 
-lazy_static!(
-    static ref FDL_SEL_GROUP: Selector = Selector::parse("div.forum-group").unwrap();
-    static ref FDL_SEL_TR: Selector = Selector::parse("tr").unwrap();
-    static ref CAT_SEL_TITLE: Selector = Selector::parse("td.name div.title a").unwrap();
-    static ref CAT_SEL_THREADS: Selector = Selector::parse(".threads").unwrap();
-    static ref CAT_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
-    static ref SITE_REGEX: Regex = Regex::new(r#"https?:\/\/\w+.\w+.?\w*\/"#).unwrap();
-    static ref CAT_ID_REGEX: Regex = Regex::new(r#"c-(\d+)"#).unwrap();
-    static ref GT_SEL_TR: Selector = Selector::parse(".table tr").unwrap();
-    static ref THD_SEL_TITLE: Selector = Selector::parse(".name .title a").unwrap();
-    static ref THD_SEL_DESC: Selector = Selector::parse(".name .description").unwrap();
-    static ref THD_SEL_DATE: Selector = Selector::parse(".started .odate").unwrap();
-    static ref THD_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
-    static ref THD_SEL_AUTHOR: Selector = Selector::parse(".started .printuser a").unwrap();
-    static ref THD_ID_REGEX: Regex = Regex::new(r#"t-(\d+)"#).unwrap();
-    static ref PM_SEL_POST: Selector = Selector::parse(".post").unwrap();
-    static ref PM_SEL_CONTAINERS: Selector = Selector::parse(".post-container").unwrap();
-    static ref PM_SEL_TITLE: Selector = Selector::parse(".long .head .title").unwrap();
-    static ref PM_SEL_DATE: Selector = Selector::parse(".long .head .info .odate").unwrap();
-    static ref PM_SEL_AUTHOR: Selector = Selector::parse(".long .head .info .printuser a").unwrap();
-    static ref PM_SEL_CONTENT: Selector = Selector::parse(".long .content").unwrap();
-    static ref GM_SEL_THREAD_CONTAINER_POSTS: Selector = Selector::parse("#thread-container-posts").unwrap();
-);
+    lazy_static!(
+        pub(super) static ref FDL_SEL_GROUP: Selector = Selector::parse("div.forum-group").unwrap();
+        pub(super) static ref FDL_SEL_TR: Selector = Selector::parse("tr").unwrap();
+        pub(super) static ref CAT_SEL_TITLE: Selector = Selector::parse("td.name div.title a").unwrap();
+        pub(super) static ref CAT_SEL_THREADS: Selector = Selector::parse(".threads").unwrap();
+        pub(super) static ref CAT_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
+        pub(super) static ref SITE_REGEX: Regex = Regex::new(r#"https?:\/\/\w+.\w+.?\w*\/"#).unwrap();
+        pub(super) static ref CAT_ID_REGEX: Regex = Regex::new(r#"c-(\d+)"#).unwrap();
+        pub(super) static ref GT_SEL_TR: Selector = Selector::parse(".table tr").unwrap();
+        pub(super) static ref THD_SEL_TITLE: Selector = Selector::parse(".name .title a").unwrap();
+        pub(super) static ref THD_SEL_DESC: Selector = Selector::parse(".name .description").unwrap();
+        pub(super) static ref THD_SEL_DATE: Selector = Selector::parse(".started .odate").unwrap();
+        pub(super) static ref THD_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
+        pub(super) static ref THD_SEL_AUTHOR: Selector = Selector::parse(".started .printuser a").unwrap();
+        pub(super) static ref THD_ID_REGEX: Regex = Regex::new(r#"t-(\d+)"#).unwrap();
+        pub(super) static ref PM_SEL_POST: Selector = Selector::parse(".post").unwrap();
+        pub(super) static ref PM_SEL_CONTAINERS: Selector = Selector::parse(".post-container").unwrap();
+        pub(super) static ref PM_SEL_TITLE: Selector = Selector::parse(".long .head .title").unwrap();
+        pub(super) static ref PM_SEL_DATE: Selector = Selector::parse(".long .head .info .odate").unwrap();
+        pub(super) static ref PM_SEL_AUTHOR: Selector = Selector::parse(".long .head .info .printuser a").unwrap();
+        pub(super) static ref PM_SEL_CONTENT: Selector = Selector::parse(".long .content").unwrap();
+        pub(super) static ref GM_SEL_THREAD_CONTAINER_POSTS: Selector = Selector::parse("#thread-container-posts").unwrap();
+        pub(super) static ref SEL_PAGER: Selector = Selector::parse(".pager span").unwrap();
+    );
+}
+
+use statics::*;
+use crate::{FATAL_ERROR, PARALLEL_DOWNLOADS};
 
 pub(crate) struct ForumDownloader {
-    authors: Arc<Mutex<Vec<Author>>>,
-    messages: Arc<Mutex<Vec<Message>>>,
+    authors: RwLock<Vec<Author>>,
+    messages: RwLock<Vec<Message>>,
     client: Arc<reqwest::Client>,
-    site: Arc<Site>,
-    db: Arc<Pool<MySql>>
+    site: Site,
+    db: Pool<MySql>
 }
 
 impl ForumDownloader {
-    pub fn new(db: Arc<Pool<MySql>>, site: Arc<Site>) -> Self {
+    pub fn new(db: Pool<MySql>, site: Site) -> Arc<Self> {
         Self {
             db,
             site,
-            authors: Arc::new(Mutex::new(Vec::new())),
-            messages: Arc::new(Mutex::new(Vec::new())),
-            client: Arc::new(reqwest::Client::new()),
-        }
+            authors: RwLock::default(),
+            messages: RwLock::default(),
+            client: Arc::new(reqwest::Client::new())
+        }.into()
     }
 
-    pub async fn download(self, forum_url: &str) -> Result<(), Box<dyn Error>> {
-        let doc = download_html(&self.client, format!("http://{}.wikidot.com/{forum_url}", self.site.url), 5)
-            .await
-            .expect("Too many failed attempts");
+    pub async fn download(self: Arc<Self>, forum_url: String) -> Result<(), ApiError> {
+        let categories: Box<[_]> = {
+            let doc = download(self.client.clone(), format!("http://{}.wikidot.com/{forum_url}", self.site.url), 5).await?;
 
-        let groups = doc.select(&FDL_SEL_GROUP);
-        let categories = groups
-            .flat_map(|group| {
-                group.select(&FDL_SEL_TR).skip(1).map(|html| self.parse_category(html))
-            }).join_all().await;
+            Html::parse_document(doc.as_str()).select(&FDL_SEL_GROUP)
+                .flat_map(|group| {
+                    group.select(&FDL_SEL_TR).skip(1).map(|html| self.clone().parse_category(html))
+                }).collect::<Result<_, _>>()?
+        };
 
-        let threads = categories.iter()
-            .map(|(category, cat_addr)| self.download_threads(cat_addr.as_str(), category.id))
-            .join_all().await.into_iter().flatten().collect::<Box<[_]>>();
+        let (download_threads, categories): (Vec<_>, Vec<_>) = categories.into_iter()
+            .map(|(category, cat_addr)| ((category.id, cat_addr), category)).unzip();
 
-        threads.iter().map(|(thread, thread_addr)| self.get_messages(thread_addr.as_str(), thread.id))
-            .into_future_iter().buffer_unordered(crate::THREADS).collect::<Vec<_>>().await;
+        let (get_messages, threads): (Vec<_>, Vec<_>) = download_threads.into_iter()
+            .map(|(category, cat_addr)| self.clone().download_threads(cat_addr.as_str().into(), category))
+            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?.into_iter().flatten()
+            .map(|(thread, thread_addr)| ((thread.id, thread_addr), thread)).unzip();
 
-        println!("Found {} categories, {} threads, {} messages from {} authors.", categories.len(), threads.len(), self.messages.lock().await.len(), self.authors.lock().await.len());
+        get_messages.into_iter().map(|(thread, thread_addr)| self.clone().get_messages(thread_addr.as_str().into(), thread))
+            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?;
 
-        let mut trx = self.db.begin().await?;
+        let mut this = Arc::into_inner(self).expect(FATAL_ERROR);
+        let authors = mem::take(&mut this.authors).into_inner();
+        let messages = mem::take(&mut this.messages).into_inner();
 
-        for category in categories.into_iter().map(|(c, _)| c) {
+        println!("Found {} categories, {} threads, {} messages from {} authors.", categories.len(), threads.len(), messages.len(), authors.len());
+
+        let mut trx = this.db.begin().await?;
+
+        for category in categories {
             category.query_insert().execute(&mut *trx).await.ok();
         }
 
-        for author in self.authors.lock().await.iter() {
+        for author in authors {
             author.query_insert().execute(&mut *trx).await.ok();
         }
 
-        for thread in threads.into_iter().map(|(t, _)| t) {
+        for thread in threads {
             thread.query_insert().execute(&mut *trx).await.ok();
         }
 
-        for message in self.messages.lock().await.iter() {
+        for message in messages {
             message.query_insert().execute(&mut *trx).await.ok();
         }
 
@@ -99,62 +115,93 @@ impl ForumDownloader {
         Ok(())
     }
 
-    async fn add_author(&self, author_username: &String) {
-        let mut authors = self.authors.lock().await;
-        if !authors.iter().any(|author| *author.username == *author_username) {
-            authors.push(Author {username: author_username.clone() });
+    async fn add_author(self: Arc<Self>, author_username: &str) {
+        if !self.authors.read().await.iter().any(|author| *author.username == *author_username) {
+            self.authors.write().await.push(Author {username: author_username.to_string() });
         }
     }
 
-    async fn parse_category(&self, tr: ElementRef<'_>) -> (Category, String) {
+    fn parse_category(self: Arc<Self>, tr: ElementRef<'_>) -> Result<(Category, String), ApiError> {
         let url = tr.select(&CAT_SEL_TITLE).next()
             .and_then(|title| title.attr("href"))
-            .unwrap_or_else(|| panic!("Can't find title for a category: {}", tr.inner_html()))
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Category: can't find link",
+                at: tr.inner_html()
+            })?
             .strip_prefix("/")
-            .expect("Category URL is not relative (but it should be).")
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Category: url not prefixed by '/'",
+                at: tr.inner_html()
+            })?
             .rsplit_once('/')
-            .unwrap()
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Category: url does not contain '/'",
+                at: tr.inner_html()
+            })?
             .0;
-        (
+        Ok((
             Category {
-                id: CAT_ID_REGEX.find(url).unwrap().as_str().split_once("-").unwrap().1.parse().unwrap(),
+                id: CAT_ID_REGEX.find(url).and_then(|m| m.as_str().split_once("-"))
+                    .ok_or_else(|| ApiError::ParsingError {
+                        details: "Category: could not find id",
+                        at: url.to_string(),
+                    }).and_then(|(_, id)| id.parse().map_err(|_| ApiError::ParsingError {
+                        details: "Category: could not parse id",
+                        at: id.to_string()
+                    }))?,
                 name: tr
                     .select(&CAT_SEL_TITLE)
                     .next().map(|title| title.inner_html()),
                 site_url: self.site.url.clone()
             },
             url.to_string()
-        )
+        ))
     }
 
-    async fn download_threads(&self, category_path: &str, category_id: i32) -> Box<[(Thread, String)]> {
+    async fn download_threads(self: Arc<Self>, category_path: Arc<str>, category_id: i32) -> Result<Box<[(Thread, String)]>, ApiError> {
         let category_url = format!("http://{}.wikidot.com/{category_path}", self.site.url);
-        let doc = download_html(&self.client, category_url.as_str(), 5)
-            .await
-            .expect("Too many failed attempts");
-        let pages_nb = _get_page_nb(&doc);
+        let pages_nb = _get_page_nb(
+            &Html::parse_document(download(self.client.clone(), category_url.as_str(), 5).await?.as_str())
+        );
 
-        (1..=pages_nb)
+        let threads: Box<_> = (1..=pages_nb)
             .map(|i| format!("{category_url}/p/{i}"))
-            .map(|page| download_html(self.client.clone(), page, 5))
-            .into_future_iter().buffer_unordered(4)
-            .try_collect::<Vec<_>>().await
-            .expect("Too many failed attempts")
+            .map(|page| download(self.client.clone(), page, 5))
+            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?
             .iter()
-            .flat_map(|page| page.select(&GT_SEL_TR).skip(1).map(|tr| self.parse_thread(tr, category_id) ))
-            .into_future_iter().buffer_unordered(crate::THREADS).collect::<Vec<_>>()
-            .await.into_boxed_slice()
+            .map(String::as_str).map(Html::parse_document)
+            .flat_map(|page| page
+                .select(&GT_SEL_TR)
+                .skip(1)
+                .map(|tr| self.clone().parse_thread(tr, category_id))
+                .collect::<Box<[_]>>()
+            ).collect::<Result<_, _>>()?;
+
+        for author_username in threads.iter().filter_map(|(thread, _)| thread.author_username.as_ref()) {
+            self.clone().add_author(author_username).await;
+        }
+
+        Ok(threads)
     }
 
-    async fn parse_thread(&self, thread: ElementRef<'_>, category_id: i32) -> (Thread, String) {
+    fn parse_thread(self: Arc<Self>, thread: ElementRef<'_>, category_id: i32) -> Result<(Thread, String), ApiError> {
         let title = thread.select(&THD_SEL_TITLE).next();
         let url = title
             .and_then(|link| link.attr("href"))
-            .expect("No url for a forum thread")
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Thread: can't find link",
+                at: thread.inner_html()
+            })?
             .strip_prefix("/")
-            .expect("Thread URL is not relative (but it should be).")
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Thread: url not prefixed by '/'",
+                at: thread.inner_html()
+            })?
             .rsplit_once('/')
-            .unwrap()
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Thread: url does not contain '/'",
+                at: thread.inner_html()
+            })?
             .0;
 
 
@@ -162,13 +209,17 @@ impl ForumDownloader {
             .select(&THD_SEL_AUTHOR).nth(1)
             .map(|author| author.inner_html().trim().to_string());
 
-        if let Some(author_username) = author_username.as_ref() {
-            self.add_author(author_username).await;
-        }
-
-        (
+        Ok((
             Thread {
-                id: THD_ID_REGEX.find(url).unwrap().as_str().split_once("-").unwrap().1.parse().unwrap(),
+                id: THD_ID_REGEX.find(url)
+                    .and_then(|m| m.as_str().split_once("-"))
+                    .ok_or_else(|| ApiError::ParsingError {
+                        details: "Thread: could not find id",
+                        at: url.to_string(),
+                    }).and_then(|(_, id)| id.parse().map_err(|_| ApiError::ParsingError {
+                        details: "Thread: could not parse id",
+                        at: id.to_string()
+                    }))?,
                 title: title.map(|link| link.inner_html().trim().to_string()),
                 description: thread
                     .select(&THD_SEL_DESC)
@@ -182,69 +233,79 @@ impl ForumDownloader {
                 category_id
             },
             url.to_string()
-        )
+        ))
     }
 
-    async fn get_messages(&self, thread_path: &str, thread_id: i32) {
+    async fn get_messages(self: Arc<Self>, thread_path: Arc<str>, thread_id: i32) -> Result<(), ApiError> {
         let thread_url = format!("http://{}.wikidot.com/{thread_path}", self.site.url);
-        let doc = download_html(&self.client, &thread_url, 5)
-            .await
-            .expect("Too many failed attempts");
-        let pages_nb = _get_page_nb(&doc);
-
-        let full_doc = Html::parse_fragment(
-            iter::once(doc)
-                .chain(
-                    (2..=pages_nb)
-                        .map(|i| format!("{thread_url}/p/{i}"))
-                        .map(|url| download_html(&self.client, url, 5))
-                        .try_join_all().await.expect("Too many failed attempts")
-                )
-                .map(|doc|
-                    doc.select(&GM_SEL_THREAD_CONTAINER_POSTS)
-                        .map(|doc| doc.inner_html())
-                        .join("\n")
-                ).join("\n").as_str()
+        let pages_nb = _get_page_nb(
+            &Html::parse_document(
+                download(
+                    self.client.clone(),
+                    thread_url.as_str(),
+                    5
+                ).await?.as_str()
+            )
         );
 
+        let messages = {
+            let full_doc = Html::parse_fragment(
+                (1..=pages_nb)
+                    .map(|i| format!("{thread_url}/p/{i}"))
+                    .map(|url| download(self.client.clone(), url, 5))
+                    .into_future_iter().buffered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?
+                    .iter()
+                    .map(String::as_str)
+                    .map(Html::parse_document)
+                    .map(|doc|
+                        doc.select(&GM_SEL_THREAD_CONTAINER_POSTS)
+                            .map(|doc| doc.inner_html())
+                            .join("\n")
+                    ).join("\n").as_str()
+            );
 
-        let messages = full_doc
-            .select(&PM_SEL_CONTAINERS)
-            .flat_map(|message| self.parse_message(message, thread_id, None))
-            .collect::<Box<[_]>>();
+            full_doc
+                .select(&PM_SEL_CONTAINERS)
+                .map(|message| self.parse_message(message, thread_id, None))
+                .flatten_ok()
+                .collect::<Result<Box<[_]>, _>>()?
+        };
 
-        {
-            let mut authors = self.authors.lock().await;
-            messages.iter().filter_map(|message| message.author_username.as_ref())
-                .for_each(|author_username|
-                if !authors.iter().any(|author| author.username == *author_username) {
-                    authors.push(Author { username: author_username.clone() });
-                }
-            )
+        for author_username in messages.iter().filter_map(|message| message.author_username.as_ref()) {
+            self.clone().add_author(author_username).await;
         }
 
-        {
-            let mut messages_vec = self.messages.lock().await;
-            messages.into_iter().for_each(|message| messages_vec.push(message));
+        for message in messages {
+            self.clone().messages.write().await.push(message)
         }
+
+        Ok(())
     }
 
-    fn parse_message<'a>(&'a self, post_container: ElementRef<'a>, thread_id: i32, answers_to: Option<i32>) -> Box<[Message]> {
+    fn parse_message<'a>(&'a self, post_container: ElementRef<'a>, thread_id: i32, answers_to: Option<i32>) -> Result<Box<[Message]>, ApiError> {
         let mut children = post_container.child_elements();
 
-        let Some(message) = children.next() else {
-            eprintln!("No post in a post container.");
-            return Box::default();
-        };
+        let message = children.next().ok_or_else(|| ApiError::ParsingError {
+            details: "Message: empty post-container",
+            at: post_container.inner_html()
+        })?;
 
         let author_username = message
             .select(&PM_SEL_AUTHOR).nth(1)
             .map(|author| author.inner_html().trim().to_string());
 
-        let id = message.attr("id").unwrap().split_once("-").unwrap().1.parse().unwrap();
+        let id = message.attr("id")
+            .and_then(|s| s.split_once("-"))
+            .ok_or_else(|| ApiError::ParsingError {
+                details: "Message: could not find id",
+                at: message.inner_html(),
+            }).and_then(|(_, id)| id.parse().map_err(|_| ApiError::ParsingError {
+                details: "Message: could not parse id",
+                at: id.to_string()
+            }))?;
 
 
-        iter::once(Message {
+        Ok(iter::once(Message {
             id,
             title: message
                 .select(&PM_SEL_TITLE)
@@ -259,9 +320,11 @@ impl ForumDownloader {
                 .next().map(|title| title.inner_html().trim().to_string()),
             thread_id,
             answers_to
-        }).chain(children.flat_map(|post_container|
-            self.parse_message(post_container, thread_id, Some(id))
-        )).collect()
+        }).chain(
+            children.map(|post_container|
+                self.parse_message(post_container, thread_id, Some(id))
+            ).flatten_ok().collect::<Result<Box<[_]>, _>>()?
+        ).collect())
 
     }
 }
@@ -270,9 +333,7 @@ const WIKIDOT_DATE_FORMAT: &str = "%d %b %Y %H:%M";
 
 
 fn _get_page_nb(doc: &Html) -> i32 {
-    let sel_pager = Selector::parse(".pager span").unwrap();
-
-    doc.select(&sel_pager)
+    doc.select(&SEL_PAGER)
         .next()
         .and_then(|span| {
             span.inner_html()

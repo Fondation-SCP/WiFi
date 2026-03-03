@@ -1,19 +1,19 @@
-use std::time::Duration;
+use std::ops::Deref;
 use futures_util::future::{join_all, try_join_all, JoinAll, TryJoinAll};
 use futures_util::{FutureExt, TryFuture};
 use reqwest::header::USER_AGENT;
-use scraper::Html;
+use std::time::Duration;
 use tokio_stream::Iter;
 
-pub async fn download_html(
-    client: impl AsRef<reqwest::Client>,
-    url: impl AsRef<str>,
+pub async fn download(
+    client: impl Deref<Target = reqwest::Client>,
+    url: impl AsRef<str> + Send + Sync,
     max_retries: usize,
-) -> Result<Html, reqwest::Error> {
-    retry_async(max_retries, Some(Duration::from_secs(2)), async || {
-        client.as_ref()
+) -> Result<String, reqwest::Error> {
+    retry_async(max_retries, Some(Duration::from_secs(2)), || async {
+        client
             .get(url.as_ref())
-            .header(USER_AGENT, "ScpScriptsAnthology/1.0")
+            .header(USER_AGENT, "WikidotForumIndex/1.0")
             .send()
             .then(async |r| match r {
                 Ok(r) => r.text().await,
@@ -22,7 +22,6 @@ pub async fn download_html(
             .await
             .inspect_err(|e| eprintln!("Request error: {e}. Retrying in 2 seconds."))
     }).await
-        .map(|s| Html::parse_document(s.as_str()))
 }
 
 #[allow(unused)]
@@ -63,7 +62,7 @@ pub trait TryIterator<R, E>: Sized + Iterator<Item = Result<R, E>> {
 impl<R, E, I: Sized + Iterator<Item = Result<R, E>>> TryIterator<R, E> for I {}
 
 #[allow(unused)]
-pub(crate) async fn retry_async<O, E>(mut retries: usize, sleep: Option<Duration>, f: impl AsyncFn() -> Result<O, E>) -> Result<O, E> {
+pub(crate) async fn retry_async<O, E, F: Future<Output = Result<O, E>>>(mut retries: usize, sleep: Option<Duration>, f: impl Fn() -> F) -> Result<O, E> {
     let mut res = f().await;
     while retries > 0 && res.is_err() {
         if let Some(dur) = sleep {
