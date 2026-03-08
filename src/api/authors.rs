@@ -1,5 +1,5 @@
 use super::prelude::*;
-use crate::db_structs::Author;
+use crate::objects::Author;
 
 
 #[derive(Debug, Serialize, Deserialize)]

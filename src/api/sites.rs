@@ -1,6 +1,6 @@
 use super::prelude::*;
 use crate::api::WriteToken;
-use crate::db_structs::{Insertable, Site};
+use crate::objects::{Insertable, Site};
 use crate::forum_downloader::ForumDownloader;
 use axum::http::StatusCode;
 

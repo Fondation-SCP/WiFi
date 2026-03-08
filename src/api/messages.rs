@@ -1,7 +1,7 @@
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use super::prelude::*;
-use crate::db_structs::Message;
+use crate::objects::Message;
 use crate::tools::TryFutureIterator;
 
 #[derive(Debug, Serialize, Deserialize)]

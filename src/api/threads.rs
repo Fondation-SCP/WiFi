@@ -1,6 +1,6 @@
 use axum::extract::Path;
 use super::prelude::*;
-use crate::db_structs::{Message, Thread};
+use crate::objects::{Message, Thread};
 use super::messages::{build_answers_hierarchy, FullMessage};
 use crate::tools::TryFutureIterator;
 

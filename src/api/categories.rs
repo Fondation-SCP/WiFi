@@ -1,5 +1,5 @@
 use super::prelude::*;
-use crate::db_structs::Category;
+use crate::objects::Category;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct CategoryQuery {

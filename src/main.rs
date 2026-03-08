@@ -1,17 +1,15 @@
-use crate::db_structs::{Author, Category, Insertable, Message, Site, Thread};
-use sqlx::mysql::{MySqlArguments, MySqlPoolOptions};
+//! # WiFi: the Wikidot Forum indexer.
+//! Downloads Wikidot forums into a database and exposes an API to search through it.
+
+use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySql, Pool};
 use std::error::Error;
 
 mod forum_downloader;
-use crate::api::create_router;
-
 mod tools;
-mod db_structs;
+mod objects;
 mod api;
-pub mod errors;
-
-pub type Query<'a> = sqlx::query::Query<'a, MySql, MySqlArguments>;
+mod errors;
 
 const PARALLEL_DOWNLOADS: usize = 16;
 const DB_URL: &str = "mariadb://cyrielle@localhost:3306/wifi_test";
@@ -26,7 +24,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
 
     init_db_schema(&db).await?;
 
-    let app = create_router(db);
+    let app = api::create_router(db);
 
     axum::serve(
         tokio::net::TcpListener::bind("0.0.0.0:5000").await?,
@@ -38,7 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
 }
 
 async fn init_db_schema(db: &Pool<MySql>) -> Result<(), sqlx::Error> {
-
+    use crate::objects::*;
     let tables = [
         Site::query_create_table(),
         Category::query_create_table(),

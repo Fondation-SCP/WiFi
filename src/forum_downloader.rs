@@ -1,4 +1,6 @@
-use crate::db_structs::{Author, Category, Insertable, Message, Site, Thread};
+//! Downloads a Wikidot forum and adds its data into the database
+
+use crate::objects::{Author, Category, Insertable, Message, Site, Thread};
 use crate::errors::ApiError;
 use crate::tools::{download, FutureIterator};
 use chrono::NaiveDateTime;
@@ -10,35 +12,98 @@ use std::sync::Arc;
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::sync::RwLock;
 
-/// The [forum_downloader] has a lot of static variables. To improve the clarity of the code structure,
-/// I've decided to put them all into a submodule.
+/// Static variables ([Selectors](scraper::Selector) and [Regexes](regex::Regex)) used for scrapping.
 mod statics {
     use lazy_static::lazy_static;
     use regex::Regex;
     use scraper::Selector;
 
     lazy_static!(
+        /// Selects a [Category](crate::objects::Category) group on the forum.
+        ///
+        /// Parsed from `div.forum-group`.
         pub(super) static ref FDL_SEL_GROUP: Selector = Selector::parse("div.forum-group").unwrap();
+        /// Selects `<tr>`.
         pub(super) static ref FDL_SEL_TR: Selector = Selector::parse("tr").unwrap();
+        /// Selects the [name of a Category](crate::objects::Category::name).
+        ///
+        /// Parsed from `td.name div.title a`.
         pub(super) static ref CAT_SEL_TITLE: Selector = Selector::parse("td.name div.title a").unwrap();
+        /// Selects the number of threads in a [Category](crate::objects::Category).
+        ///
+        /// Parsed from `.threads`.
         pub(super) static ref CAT_SEL_THREADS: Selector = Selector::parse(".threads").unwrap();
+        /// Selects the number of messages in a [Category](crate::objects::Category).
+        ///
+        /// Parsed from `.posts`.
         pub(super) static ref CAT_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
+        /// Matches the domain name of a URL:
+        ///
+        /// Parsed from `https?:\/\/\w+.\w+.?\w*\/`.
         pub(super) static ref SITE_REGEX: Regex = Regex::new(r#"https?:\/\/\w+.\w+.?\w*\/"#).unwrap();
+        /// Matches the [ID of a Category](crate::objects::Category::id) in the URL.
+        ///
+        /// Parsed from `c-(\d+)`.
         pub(super) static ref CAT_ID_REGEX: Regex = Regex::new(r#"c-(\d+)"#).unwrap();
+        /// Selects a line of the list of [Threads](crate::objects::Thread) in a [Category](crate::objects::Category).
+        ///
+        /// Parsed from `.table tr`.
         pub(super) static ref GT_SEL_TR: Selector = Selector::parse(".table tr").unwrap();
+        /// Selects the [title of a Thread](crate::objects::Thread::title).
+        ///
+        /// Parsed from `.name .title a`.
         pub(super) static ref THD_SEL_TITLE: Selector = Selector::parse(".name .title a").unwrap();
+        /// Selects the [description of a Thread](crate::objects::Thread::description).
+        ///
+        /// Parsed from `.name .description`.
         pub(super) static ref THD_SEL_DESC: Selector = Selector::parse(".name .description").unwrap();
+        /// Selects the [creation date of a Thread](crate::objects::Thread::creation_date).
+        ///
+        /// Parsed from `.started .odate`.
         pub(super) static ref THD_SEL_DATE: Selector = Selector::parse(".started .odate").unwrap();
+        /// Selects the number of messages in a [Thread](crate::objects::Thread).
+        ///
+        /// Parsed from `.posts`.
         pub(super) static ref THD_SEL_POSTS: Selector = Selector::parse(".posts").unwrap();
+        /// Selects the [username of the author of the Thread](crate::objects::Thread::author_username).
+        ///
+        /// Parsed from `.started .printuser a`.
         pub(super) static ref THD_SEL_AUTHOR: Selector = Selector::parse(".started .printuser a").unwrap();
+        /// Matches the [ID of a Thread](crate::objects::Thread::id) in the URL.
+        ///
+        /// Parsed from `t-(\d+)`.
         pub(super) static ref THD_ID_REGEX: Regex = Regex::new(r#"t-(\d+)"#).unwrap();
+        /// Selects a [Message](crate::objects::Message) in a [Thread](crate::objects::Thread)
+        ///
+        /// Parsed from `.post`.
         pub(super) static ref PM_SEL_POST: Selector = Selector::parse(".post").unwrap();
+        /// Selects a post container in a [Thread](crate::objects::Thread).
+        ///
+        /// Parsed from `.post-container`.
         pub(super) static ref PM_SEL_CONTAINERS: Selector = Selector::parse(".post-container").unwrap();
+        /// Selects the [title of a Message](crate::objects::Message::title).
+        ///
+        /// Parsed from `.long .head .title`.
         pub(super) static ref PM_SEL_TITLE: Selector = Selector::parse(".long .head .title").unwrap();
+        /// Selects the [publication date of a Message](crate::objects::Message::publication_date).
+        ///
+        /// Parsed from `.long .head .info .odate`.
         pub(super) static ref PM_SEL_DATE: Selector = Selector::parse(".long .head .info .odate").unwrap();
+        /// Selects the [username of the author of a Message](crate::objects::Message::author_username).
+        ///
+        /// Parsed from `.long .head .info .printuser a`.
         pub(super) static ref PM_SEL_AUTHOR: Selector = Selector::parse(".long .head .info .printuser a").unwrap();
+        /// Selects the [content of a Message](crate::objects::Message::content).
+        ///
+        /// Parsed from `.long .content`.
         pub(super) static ref PM_SEL_CONTENT: Selector = Selector::parse(".long .content").unwrap();
+        /// Selects the thread container posts, that contains all [Messages](crate::objects::Message) of a [Thread](crate::objects::Thread).
+        ///
+        /// Parsed from `#thread-container-posts`.
         pub(super) static ref GM_SEL_THREAD_CONTAINER_POSTS: Selector = Selector::parse("#thread-container-posts").unwrap();
+        /// Selects the pager for pages with multiples pages.
+        ///
+        /// Parsed from `.pager span`.
         pub(super) static ref SEL_PAGER: Selector = Selector::parse(".pager span").unwrap();
     );
 }

@@ -1,7 +1,9 @@
-use crate::Query;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use sqlx::{query, FromRow};
+use sqlx::{query, FromRow, MySql};
+use sqlx::mysql::MySqlArguments;
+
+pub type Query<'a> = sqlx::query::Query<'a, MySql, MySqlArguments>;
 
 pub trait Insertable {
     fn query_insert(&'_ self) -> Query<'_>;
