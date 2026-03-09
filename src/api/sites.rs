@@ -13,7 +13,7 @@ pub(super) struct SiteQuery {
 }
 
 pub(super) async fn list(
-    State(db): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<SiteQuery>,
 ) -> Result<Json<Vec<Site>>, ApiError> {
     let rows: Vec<_> = sqlx::query_as!(Site,
@@ -33,14 +33,14 @@ pub(super) async fn list(
         MAX_PER_PAGE,
         params.page.unwrap_or_default() * MAX_PER_PAGE
     )
-        .fetch_all(&db)
+        .fetch_all(&state.db)
         .await?;
 
     Ok(Json(rows))
 }
 
 pub(super) async fn count(
-    State(db): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<SiteQuery>,
 ) -> Result<Json<i64>, ApiError> {
     let rows = sqlx::query!(
@@ -56,25 +56,25 @@ pub(super) async fn count(
         params.prefix,
         params.url.and_then(|s| s.split(".").next().map(String::from)),
     )
-        .fetch_one(&db)
+        .fetch_one(&state.db)
         .await?;
 
     Ok(Json(rows.nb_sites))
 }
 
 pub(super) async fn post(
-    State(db): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(token): Query<WriteToken>,
     Json(site): Json<Site>
 ) -> Result<StatusCode, ApiError> {
-    token.auth()?;
+    state.cfg.validate_token(token)?;
 
-    site.query_insert().execute(&db).await.map_err(|e| match e {
+    site.query_insert().execute(&state.db).await.map_err(|e| match e {
         sqlx::Error::Database(e) if e.code().is_some_and(|code| code == "23000") => ApiError::Duplicate,
         _ => ApiError::Sqlx(e)
     })?;
 
-    ForumDownloader::new(db, site).download("forum:start".to_string()).await?;
+    ForumDownloader::new(state.db, state.cfg, site).download("forum:start".to_string()).await?;
 
     Ok(StatusCode::CREATED)
 }

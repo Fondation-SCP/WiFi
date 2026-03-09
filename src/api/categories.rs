@@ -10,7 +10,7 @@ pub(super) struct CategoryQuery {
 }
 
 pub(super) async fn list(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<CategoryQuery>,
 ) -> Result<Json<Vec<Category>>, ApiError> {
     let rows: Vec<_> = sqlx::query_as!(Category,
@@ -31,14 +31,14 @@ pub(super) async fn list(
         MAX_PER_PAGE,
         params.page.unwrap_or_default() * MAX_PER_PAGE
     )
-        .fetch_all(&state)
+        .fetch_all(&state.db)
         .await?;
 
     Ok(Json(rows))
 }
 
 pub(super) async fn count(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<CategoryQuery>,
 ) -> Result<Json<i64>, ApiError> {
     let rows = sqlx::query!(
@@ -56,7 +56,7 @@ pub(super) async fn count(
         params.site_url,
         params.site_prefix
     )
-        .fetch_one(&state)
+        .fetch_one(&state.db)
         .await?;
 
     Ok(Json(rows.nb_categories))
@@ -64,8 +64,8 @@ pub(super) async fn count(
 
 
 pub(super) async fn get(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Path(id): Path<i32>
 ) -> Result<Json<Category>, ApiError> {
-    Ok(Json(sqlx::query_as!(Category, "select * from categories where id = ?", id).fetch_one(&state).await?))
+    Ok(Json(sqlx::query_as!(Category, "select * from categories where id = ?", id).fetch_one(&state.db).await?))
 }

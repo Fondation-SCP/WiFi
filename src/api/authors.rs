@@ -9,7 +9,7 @@ pub(super) struct AuthorQuery {
 }
 
 pub(super) async fn list(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<AuthorQuery>,
 ) -> Result<Json<Vec<Author>>, ApiError> {
     let rows: Vec<_> = sqlx::query_as!(Author,
@@ -25,14 +25,14 @@ pub(super) async fn list(
         MAX_PER_PAGE,
         params.page.unwrap_or_default() * MAX_PER_PAGE
     )
-        .fetch_all(&state)
+        .fetch_all(&state.db)
         .await?;
 
     Ok(Json(rows))
 }
 
 pub(super) async fn count(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<AuthorQuery>,
 ) -> Result<Json<i64>, ApiError> {
     let rows= sqlx::query!(
@@ -44,7 +44,7 @@ pub(super) async fn count(
         params.username,
         params.username,
     )
-        .fetch_one(&state)
+        .fetch_one(&state.db)
         .await?;
 
     Ok(Json(rows.nb_authors))

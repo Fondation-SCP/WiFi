@@ -4,35 +4,35 @@
 use sqlx::mysql::MySqlPoolOptions;
 use sqlx::{MySql, Pool};
 use std::error::Error;
+use crate::config::Config;
 
 mod forum_downloader;
 mod tools;
 mod objects;
 mod api;
 mod errors;
+mod config;
 
-const PARALLEL_DOWNLOADS: usize = 16;
-const DB_URL: &str = "mariadb://cyrielle@localhost:3306/wifi_test";
-const FATAL_ERROR: &str = "If you see this, please post an issue on Github: https://github.com/Fondation-SCP/WiFi/issues";
+const FATAL_ERROR: &str = "If you see this error message, please post an issue on Github: https://github.com/Fondation-SCP/WiFi/issues";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>>{
+
+    let config = Config::try_new()?;
+
     let db = MySqlPoolOptions::new()
         .max_connections(10)
-        .connect(DB_URL)
+        .connect(config.database.get_url().as_str())
         .await?;
 
     init_db_schema(&db).await?;
 
-    let app = api::create_router(db);
-
     axum::serve(
-        tokio::net::TcpListener::bind("0.0.0.0:5000").await?,
-        app
+        tokio::net::TcpListener::bind(config.get_bind_addr()).await?,
+        api::create_router(db, config)
     ).await?;
 
     Ok(())
-
 }
 
 async fn init_db_schema(db: &Pool<MySql>) -> Result<(), sqlx::Error> {

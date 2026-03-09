@@ -1,19 +1,19 @@
-use crate::api::prelude::{MySql, Pool};
-use crate::api::WriteToken;
+use super::{Api, WriteToken};
 use crate::errors::ApiError;
+use crate::init_db_schema;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use sqlx::query;
-use crate::init_db_schema;
 
 pub(super) async fn reset(
-    State(db): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(token): Query<WriteToken>
 ) -> Result<StatusCode, ApiError> {
-    token.auth()?;
+    state.cfg.validate_token(token)?;
 
-    query("drop table if exists messages, threads, categories, authors, sites").execute(&db).await?;
-    init_db_schema(&db).await?;
+    query("drop table if exists messages, threads, categories, authors, sites")
+        .execute(&state.db).await?;
+    init_db_schema(&state.db).await?;
 
     Ok(StatusCode::RESET_CONTENT)
 }

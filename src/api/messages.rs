@@ -22,7 +22,7 @@ pub(super) struct MessageQuery {
 }
 
 pub(super) async fn list(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<MessageQuery>,
 ) -> Result<Json<Vec<Message>>, ApiError> {
     let rows: Vec<_> = sqlx::query_as!(Message,
@@ -77,14 +77,14 @@ pub(super) async fn list(
         MAX_PER_PAGE,
         params.page.unwrap_or_default() * MAX_PER_PAGE
     )
-        .fetch_all(&state)
+        .fetch_all(&state.db)
         .await?;
 
     Ok(Json(rows))
 }
 
 pub(super) async fn count(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<MessageQuery>,
 ) -> Result<Json<i64>, ApiError> {
     let messages_nb = sqlx::query!(
@@ -124,7 +124,7 @@ pub(super) async fn count(
         params.category_name,
         params.category_name,
     )
-        .fetch_one(&state)
+        .fetch_one(&state.db)
         .await?;
 
     Ok(Json(messages_nb.messages_nb))
@@ -157,14 +157,14 @@ impl FullMessage {
 }
 
 
-pub(super) fn build_answers_hierarchy(state: State<Pool<MySql>>, message: Message) -> BoxFuture<'static, Result<FullMessage, ApiError>> {
+pub(super) fn build_answers_hierarchy(state: State<Api>, message: Message) -> BoxFuture<'static, Result<FullMessage, ApiError>> {
     async move {
         let answers: Vec<Message> = sqlx::query_as!(Message,
             r#"
                 select * from messages where answers_to = ?
             "#,
             message.id
-        ).fetch_all(&state.0).await?;
+        ).fetch_all(&state.0.db).await?;
 
         let full_answers = answers.into_iter()
             .map(|message| build_answers_hierarchy(state.clone(), message))
@@ -175,7 +175,7 @@ pub(super) fn build_answers_hierarchy(state: State<Pool<MySql>>, message: Messag
 }
 
 pub(super) async fn get(
-    state: State<Pool<MySql>>,
+    state: State<Api>,
     Path(id): Path<i32>
 ) -> Result<Json<FullMessage>, ApiError> {
     let message: Message = sqlx::query_as!(Message,
@@ -183,7 +183,7 @@ pub(super) async fn get(
             select * from messages where id = ?
         "#,
         id
-    ).fetch_one(&state.0).await?;
+    ).fetch_one(&state.0.db).await?;
 
     Ok(Json(build_answers_hierarchy(state, message).await?))
 }

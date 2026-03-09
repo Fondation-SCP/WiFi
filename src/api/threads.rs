@@ -19,7 +19,7 @@ pub(super) struct ThreadQuery {
 }
 
 pub(super) async fn list(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<ThreadQuery>,
 ) -> Result<Json<Vec<Thread>>, ApiError> {
 
@@ -65,14 +65,14 @@ pub(super) async fn list(
         MAX_PER_PAGE,
         params.page.unwrap_or_default() * MAX_PER_PAGE
     )
-        .fetch_all(&state)
+        .fetch_all(&state.db)
         .await?;
 
     Ok(Json(rows))
 }
 
 pub(super) async fn count(
-    State(state): State<Pool<MySql>>,
+    State(state): State<Api>,
     Query(params): Query<ThreadQuery>,
 ) -> Result<Json<i64>, ApiError> {
 
@@ -106,7 +106,7 @@ pub(super) async fn count(
         params.category_name,
         params.category_name
     )
-        .fetch_one(&state)
+        .fetch_one(&state.db)
         .await?;
 
     Ok(Json(thread_nb.thread_nb))
@@ -137,7 +137,7 @@ impl FullThread {
 }
 
 pub(super) async fn get(
-    state: State<Pool<MySql>>,
+    state: State<Api>,
     Path(id): Path<i32>
 ) -> Result<Json<FullThread>, ApiError> {
     let thread: Thread = sqlx::query_as!(Thread,
@@ -145,14 +145,14 @@ pub(super) async fn get(
             select * from threads where id = ?
         "#,
         id
-    ).fetch_one(&state.0).await?;
+    ).fetch_one(&state.0.db).await?;
 
     let messages: Vec<_> = sqlx::query_as!(Message,
         r#"
             select * from messages where thread_id = ? order by publication_date
         "#,
         thread.id
-    ).fetch_all(&state.0).await?
+    ).fetch_all(&state.0.db).await?
         .into_iter().map(|message| build_answers_hierarchy(state.clone(), message)).try_join_all().await?;
 
     Ok(Json(FullThread::build(thread, messages)))

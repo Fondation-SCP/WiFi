@@ -17,3 +17,5 @@ reqwest = { version = "0.13", features = ["blocking"] }
 tokio-stream = "0.1.18"
 chrono = { version = "0.4.43" , features = ["serde"]}
 thiserror = "2"
+toml = { version = "1", features = ["serde"] }
+whoami = "2"

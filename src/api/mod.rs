@@ -11,7 +11,13 @@ use serde::{Deserialize, Serialize};
 use sqlx::{MySql, Pool};
 use std::fmt::{Display, Formatter};
 use axum::routing::{delete, post};
-use crate::errors::ApiError;
+use crate::config::Config;
+
+#[derive(Clone)]
+pub(crate) struct Api {
+    db: Pool<MySql>,
+    cfg: Config
+}
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Copy)]
 pub enum Order {
@@ -36,21 +42,13 @@ pub struct WriteToken {
     token: u64
 }
 
-impl WriteToken {
-    const AUTHORIZED_TOKENS: [u64; 1] = [1644];
-
-    pub fn auth(&self) -> Result<(), ApiError> {
-        if Self::AUTHORIZED_TOKENS.contains(&self.token) {
-            Ok(())
-        } else {
-            Err(ApiError::AccessForbidden)
-        }
+impl From<WriteToken> for u64 {
+    fn from(value: WriteToken) -> Self {
+        value.token
     }
 }
 
-
-
-pub fn create_router(db: Pool<MySql>) -> Router {
+pub fn create_router(db: Pool<MySql>, cfg: Config) -> Router {
     Router::new()
         .route("/", get(async || "Connected!"))
         .route("/", delete(db::reset))
@@ -68,5 +66,8 @@ pub fn create_router(db: Pool<MySql>) -> Router {
         .route("/count/sites", get(sites::count))
         .route("/authors", get(authors::list))
         .route("/count/authors", get(authors::count))
-        .with_state(db)
+        .with_state(Api {
+            db,
+            cfg
+        })
 }

@@ -109,24 +109,27 @@ mod statics {
 }
 
 use statics::*;
-use crate::{FATAL_ERROR, PARALLEL_DOWNLOADS};
+use crate::{FATAL_ERROR};
+use crate::config::Config;
 
 pub(crate) struct ForumDownloader {
     authors: RwLock<Vec<Author>>,
     messages: RwLock<Vec<Message>>,
     client: Arc<reqwest::Client>,
     site: Site,
-    db: Pool<MySql>
+    db: Pool<MySql>,
+    cfg: Config
 }
 
 impl ForumDownloader {
-    pub fn new(db: Pool<MySql>, site: Site) -> Arc<Self> {
+    pub fn new(db: Pool<MySql>, cfg: Config, site: Site) -> Arc<Self> {
         Self {
             db,
             site,
             authors: RwLock::default(),
             messages: RwLock::default(),
-            client: Arc::new(reqwest::Client::new())
+            client: Arc::new(reqwest::Client::new()),
+            cfg
         }.into()
     }
 
@@ -145,11 +148,11 @@ impl ForumDownloader {
 
         let (get_messages, threads): (Vec<_>, Vec<_>) = download_threads.into_iter()
             .map(|(category, cat_addr)| self.clone().download_threads(cat_addr.as_str().into(), category))
-            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?.into_iter().flatten()
+            .into_future_iter().buffer_unordered(self.cfg.parallel_tasks).try_collect::<Vec<_>>().await?.into_iter().flatten()
             .map(|(thread, thread_addr)| ((thread.id, thread_addr), thread)).unzip();
 
         get_messages.into_iter().map(|(thread, thread_addr)| self.clone().get_messages(thread_addr.as_str().into(), thread))
-            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?;
+            .into_future_iter().buffer_unordered(self.cfg.parallel_tasks).try_collect::<Vec<_>>().await?;
 
         let mut this = Arc::into_inner(self).expect(FATAL_ERROR);
         let authors = mem::take(&mut this.authors).into_inner();
@@ -232,7 +235,7 @@ impl ForumDownloader {
         let threads: Box<_> = (1..=pages_nb)
             .map(|i| format!("{category_url}/p/{i}"))
             .map(|page| download(self.client.clone(), page, 5))
-            .into_future_iter().buffer_unordered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?
+            .into_future_iter().buffer_unordered(self.cfg.parallel_tasks).try_collect::<Vec<_>>().await?
             .iter()
             .map(String::as_str).map(Html::parse_document)
             .flat_map(|page| page
@@ -318,7 +321,7 @@ impl ForumDownloader {
                 (1..=pages_nb)
                     .map(|i| format!("{thread_url}/p/{i}"))
                     .map(|url| download(self.client.clone(), url, 5))
-                    .into_future_iter().buffered(PARALLEL_DOWNLOADS).try_collect::<Vec<_>>().await?
+                    .into_future_iter().buffered(self.cfg.parallel_tasks).try_collect::<Vec<_>>().await?
                     .iter()
                     .map(String::as_str)
                     .map(Html::parse_document)
